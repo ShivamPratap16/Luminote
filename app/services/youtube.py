@@ -129,7 +129,7 @@ class YouTubeService:
                 try:
                     # Fallback to any manual
                     manual_transcripts = transcript_list.find_manually_created_transcript(
-                        [t.language_code for t in transcript_list._manually_created_transcripts]
+                        list(transcript_list._manually_created_transcripts.keys())
                     )
                     selected_transcript = manual_transcripts
                 except NoTranscriptFound:
@@ -141,7 +141,7 @@ class YouTubeService:
                         try:
                             # Fallback to any auto
                             auto_transcripts = transcript_list.find_generated_transcript(
-                                [t.language_code for t in transcript_list._generated_transcripts]
+                                list(transcript_list._generated_transcripts.keys())
                             )
                             selected_transcript = auto_transcripts
                         except NoTranscriptFound:
@@ -150,10 +150,10 @@ class YouTubeService:
             if not selected_transcript:
                 return None
                 
-            raw_captions = selected_transcript.fetch()
+            raw_captions = list(selected_transcript.fetch())
             
             # Validate and Normalize
-            if not raw_captions or not isinstance(raw_captions, list):
+            if not raw_captions or not isinstance(raw_captions, (list, object)):
                 logger.warning("Fetched captions are empty or invalid", video_id=video_id)
                 return None
                 
