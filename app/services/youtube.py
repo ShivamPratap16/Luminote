@@ -159,12 +159,18 @@ class YouTubeService:
                 
             normalized = []
             for item in raw_captions:
-                text = item.get("text", "").strip()
+                if hasattr(item, 'text'):
+                    text = getattr(item, 'text', '').strip()
+                    start = float(getattr(item, 'start', 0.0))
+                    duration = float(getattr(item, 'duration', 0.0))
+                else:
+                    text = item.get("text", "").strip()
+                    start = float(item.get("start", 0.0))
+                    duration = float(item.get("duration", 0.0))
+
                 if not text:
                     continue
                     
-                start = float(item.get("start", 0.0))
-                duration = float(item.get("duration", 0.0))
                 end = start + duration
                 
                 normalized.append({
@@ -172,6 +178,7 @@ class YouTubeService:
                     "end_seconds": end,
                     "text": text,
                 })
+
                 
             if not normalized:
                 logger.warning("Captions were empty after normalization", video_id=video_id)
@@ -188,3 +195,4 @@ class YouTubeService:
         except Exception as e:
             logger.info("Caption extraction unavailable or failed", video_id=video_id, error=str(e))
             return None
+
