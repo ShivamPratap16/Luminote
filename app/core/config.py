@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     MEDIA_MAX_DURATION_SECONDS: int = 14400  # 4 hours
     YOUTUBE_MEDIA_CACHE_ENABLED: bool = True
     YOUTUBE_MEDIA_CACHE_DIR: str = "./data/youtube-cache"
-    PIPELINE_VERSION: str = "v2"
+    PIPELINE_VERSION: str = "v7"
 
     # Transcription
     WHISPER_MODEL_SIZE: str = "base"
@@ -75,6 +75,11 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+
+
+
 
 
 

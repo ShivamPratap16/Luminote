@@ -87,6 +87,7 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
     lecture = context.get("lecture", {})
     chapters = context.get("chapters", [])
     transcript = context.get("transcript", [])
+    visual_events = context.get("visual_events", [])
 
     parts = [f"Lecture: {lecture.get('title', 'Unknown')}\n"]
 
@@ -96,6 +97,12 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
             parts.append(
                 f"  - {ch['title']} ({ch['start_seconds']:.0f}s - {ch['end_seconds']:.0f}s)"
             )
+        parts.append("")
+
+    if visual_events:
+        parts.append("Visual Events on Screen (Slides/Whiteboard Context):")
+        for ve in visual_events:
+            parts.append(f"{ve['context']}")
         parts.append("")
 
     parts.append("Transcript:")
@@ -308,3 +315,4 @@ def create_ai_provider(provider_name: str | None = None) -> AIProvider:
         return GoogleAIProvider()
     else:
         raise ValueError(f"Unknown AI provider: {name}. Supported: nvidia, openai, google")
+

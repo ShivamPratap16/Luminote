@@ -5,6 +5,7 @@ import httpx
 import structlog
 import asyncio
 import time
+import re
 from typing import List, Dict, Any, Optional
 from app.core.config import settings
 from app.schemas.vision import VisualEventSchema
@@ -27,7 +28,6 @@ class VisionService:
             logger.warning("NVIDIA_API_KEY not set. Skipping vision analysis.")
             return []
 
-        # Prepare messages
         content = [
             {
                 "type": "text", 
@@ -50,7 +50,6 @@ class VisionService:
             frame_id = f"frame_{idx}"
             event['temp_frame_id'] = frame_id
             
-            # Attach context if possible
             ts = event['timestamp']
             ctx = ""
             if transcript_segments:
@@ -80,21 +79,25 @@ class VisionService:
                     response.raise_for_status()
                     data = response.json()
                     
-                    content = data['choices'][0]['message']['content']
-                    if content.startswith('json'):
-                        content = content[7:-3]
-                    elif content.startswith(''):
-                        content = content[3:-3]
+                    text_content = data['choices'][0]['message']['content']
                     
-                    parsed_array = json.loads(content)
+                    # Robust JSON extraction
+                    match = re.search(r'\[.*\]', text_content, re.DOTALL)
+                    if not match:
+                        match = re.search(r'\{.*\}', text_content, re.DOTALL)
+                    
+                    if not match:
+                        raise ValueError(f"Could not find JSON block in response: {text_content[:100]}")
+                        
+                    json_str = match.group(0)
+                    parsed_array = json.loads(json_str)
+                    
                     if not isinstance(parsed_array, list):
-                        # Attempt to wrap it if it returned a single object incorrectly
                         parsed_array = [parsed_array]
                         
                     results = []
                     for item in parsed_array:
                         fid = item.get('frame_id')
-                        # Find matching event
                         matching_event = next((e for e in events if e.get('temp_frame_id') == fid), None)
                         if matching_event:
                             item['timestamp'] = matching_event['timestamp']
@@ -122,8 +125,3 @@ class VisionService:
                     raise
         
         return []
-
-    # Keeping old sync method for compatibility if needed elsewhere
-    def analyze_frame(self, frame_path: str, context: str = "") -> Optional[VisualEventSchema]:
-        # Legacy method
-        pass

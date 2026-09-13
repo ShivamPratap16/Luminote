@@ -1,4 +1,4 @@
-"""YouTube URL validation, normalization, and metadata extraction."""
+﻿"""YouTube URL validation, normalization, and metadata extraction."""
 import re
 import structlog
 from typing import Optional
@@ -13,39 +13,28 @@ _YOUTUBE_PATTERNS = [
     re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/v/([0-9A-Za-z_-]{11})"),
     re.compile(r"(?:https?://)?youtu\.be/([0-9A-Za-z_-]{11})"),
     re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/shorts/([0-9A-Za-z_-]{11})"),
+    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/live/([0-9A-Za-z_-]{11})"),
 ]
 
+class YouTubeValidationError(Exception):
+    pass
+
+class YouTubeSourceError(Exception):
+    pass
 
 @dataclass
 class YouTubeMetadata:
     video_id: str
     title: str
-    channel_name: Optional[str]
-    duration_seconds: Optional[int]
-    thumbnail_url: Optional[str]
-    description: Optional[str]
-    chapters: list  # list of dicts with title, start_seconds, end_seconds
-
-
-class YouTubeValidationError(Exception):
-    """Raised when a YouTube URL is invalid or unsupported."""
-    pass
-
-
-class YouTubeSourceError(Exception):
-    """Raised when metadata cannot be fetched (video unavailable, private, etc.)."""
-    pass
-
+    channel_name: str
+    duration_seconds: int
+    thumbnail_url: Optional[str] = None
+    description: Optional[str] = None
+    chapters: list = None
 
 class YouTubeService:
-    """Handles YouTube URL validation, normalization, and metadata extraction."""
-
     @staticmethod
     def extract_video_id(url: str) -> str:
-        """Extract and return the 11-character video ID from a YouTube URL.
-
-        Raises YouTubeValidationError if the URL is not a recognized format.
-        """
         for pattern in _YOUTUBE_PATTERNS:
             match = pattern.search(url)
             if match:
@@ -54,65 +43,53 @@ class YouTubeService:
 
     @staticmethod
     def normalize_url(video_id: str) -> str:
-        """Return the canonical URL form for a given video ID."""
         return f"https://www.youtube.com/watch?v={video_id}"
 
     @staticmethod
     def fetch_metadata(video_id: str) -> YouTubeMetadata:
-        """Fetch video metadata using yt-dlp without downloading media.
-
-        Raises YouTubeSourceError if the video is unavailable.
-        """
         import yt_dlp
-
-        url = f"https://www.youtube.com/watch?v={video_id}"
+        from app.services.youtube_acquisition import YouTubeAcquisitionBlocked
+        
+        url = YouTubeService.normalize_url(video_id)
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": False,
+            "extract_flat": "in_playlist",
         }
-
+        
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-        except yt_dlp.utils.DownloadError as e:
-            logger.error("yt-dlp metadata extraction failed", video_id=video_id, error=str(e))
-            raise YouTubeSourceError(f"Could not access video {video_id}: {e}")
-
-        # Extract chapters if present
-        raw_chapters = info.get("chapters") or []
-        chapters = []
-        for ch in raw_chapters:
-            chapters.append({
-                "title": ch.get("title", ""),
-                "start_seconds": ch.get("start_time", 0),
-                "end_seconds": ch.get("end_time", 0),
-            })
-
-        return YouTubeMetadata(
-            video_id=video_id,
-            title=info.get("title", "Untitled"),
-            channel_name=info.get("channel") or info.get("uploader"),
-            duration_seconds=info.get("duration"),
-            thumbnail_url=info.get("thumbnail"),
-            description=info.get("description"),
-            chapters=chapters,
-        )
+                
+            raw_chapters = info.get("chapters") or []
+            chapters = []
+            for ch in raw_chapters:
+                chapters.append({
+                    "title": ch.get("title", ""),
+                    "start_seconds": ch.get("start_time", 0),
+                    "end_seconds": ch.get("end_time", 0),
+                })
+                
+            return YouTubeMetadata(
+                video_id=video_id,
+                title=info.get("title", "Untitled"),
+                channel_name=info.get("channel") or info.get("uploader"),
+                duration_seconds=info.get("duration"),
+                thumbnail_url=info.get("thumbnail"),
+                description=info.get("description"),
+                chapters=chapters,
+            )
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "sign in to confirm you" in err_msg and "not a bot" in err_msg:
+                logger.error('youtube_acquisition', video_id=video_id, cache_hit=False, status='blocked', error_type='YOUTUBE_ACQUISITION_BLOCKED')
+                raise YouTubeAcquisitionBlocked("YouTube temporarily blocked automated access.")
+                
+            logger.error("Failed to fetch YouTube metadata", video_id=video_id, error=str(e))
+            raise YouTubeSourceError(f"Could not fetch metadata for {video_id}: {e}")
 
     @staticmethod
     def fetch_captions(video_id: str) -> Optional[list[dict]]:
-        """Fetch existing captions using youtube-transcript-api.
-        
-        Returns a normalized list of transcript segments if valid captions are found.
-        Returns None if unavailable, invalid, or empty.
-        
-        Selection preference:
-        1. Manual/original English captions
-        2. Manual/original other language captions
-        3. Auto-generated English captions
-        4. Auto-generated other language captions
-        """
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
             from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
@@ -120,26 +97,20 @@ class YouTubeService:
             ytt_api = YouTubeTranscriptApi()
             transcript_list = ytt_api.list(video_id)
             
-            # 1. Prefer manual/created transcripts
             selected_transcript = None
             try:
-                # Try manual english
                 selected_transcript = transcript_list.find_manually_created_transcript(['en'])
             except NoTranscriptFound:
                 try:
-                    # Fallback to any manual
                     manual_transcripts = transcript_list.find_manually_created_transcript(
                         list(transcript_list._manually_created_transcripts.keys())
                     )
                     selected_transcript = manual_transcripts
                 except NoTranscriptFound:
-                    # 2. Fallback to generated transcripts
                     try:
-                        # Try auto english
                         selected_transcript = transcript_list.find_generated_transcript(['en'])
                     except NoTranscriptFound:
                         try:
-                            # Fallback to any auto
                             auto_transcripts = transcript_list.find_generated_transcript(
                                 list(transcript_list._generated_transcripts.keys())
                             )
@@ -152,9 +123,7 @@ class YouTubeService:
                 
             raw_captions = list(selected_transcript.fetch())
             
-            # Validate and Normalize
             if not raw_captions or not isinstance(raw_captions, (list, object)):
-                logger.warning("Fetched captions are empty or invalid", video_id=video_id)
                 return None
                 
             normalized = []
@@ -179,20 +148,11 @@ class YouTubeService:
                     "text": text,
                 })
 
-                
             if not normalized:
-                logger.warning("Captions were empty after normalization", video_id=video_id)
                 return None
                 
-            logger.info(
-                "Successfully fetched YouTube captions", 
-                video_id=video_id, 
-                segments=len(normalized),
-                is_generated=selected_transcript.is_generated
-            )
             return normalized
             
         except Exception as e:
             logger.info("Caption extraction unavailable or failed", video_id=video_id, error=str(e))
             return None
-

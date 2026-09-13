@@ -70,7 +70,7 @@ class MediaService:
                     duration = info.get("duration", 0)
             except Exception as e:
                 err_msg = str(e).lower()
-                if "sign in to confirm" in err_msg or "bot" in err_msg:
+                if "sign in to confirm you" in err_msg and "not a bot" in err_msg:
                     logger.error('youtube_acquisition', video_id=video_id, cache_hit=False, status='blocked', error_type='YOUTUBE_ACQUISITION_BLOCKED')
                     raise YouTubeAcquisitionBlocked("YouTube temporarily blocked automated access.")
                 logger.error("Media preparation failed", video_id=video_id, error=str(e))
@@ -102,3 +102,5 @@ class MediaService:
                 logger.info("Cleaned up temp file", path=file_path)
         except OSError as e:
             logger.warning("Failed to clean up temp file", path=file_path, error=str(e))
+
+

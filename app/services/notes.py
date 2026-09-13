@@ -73,7 +73,8 @@ class NotesService:
                     v_text += f" Visible text: {', '.join(ve['visible_text'])}."
                 context["visual_events"].append({
                     "timestamp": float(ve.get("timestamp", 0)),
-                    "context": v_text
+                    "context": v_text,
+                    "url": ve.get("frame_storage_key", "")
                 })
 
         return context

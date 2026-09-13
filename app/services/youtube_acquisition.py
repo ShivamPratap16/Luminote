@@ -51,7 +51,7 @@ class YouTubeAcquisitionService:
                 ydl.extract_info(url, download=True)
         except Exception as e:
             err_msg = str(e).lower()
-            if "sign in to confirm" in err_msg or "bot" in err_msg:
+            if "sign in to confirm you" in err_msg and "not a bot" in err_msg:
                 logger.error('youtube_acquisition', video_id=video_id, cache_hit=False, status='blocked', error_type='YOUTUBE_ACQUISITION_BLOCKED')
                 raise YouTubeAcquisitionBlocked("We couldn't acquire this YouTube video right now because YouTube temporarily blocked automated access. Please try again later.")
             raise Exception(f'Failed to download video: {str(e)}')
@@ -63,3 +63,5 @@ class YouTubeAcquisitionService:
             return video_path
         
         return temp_path
+
+

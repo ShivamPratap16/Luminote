@@ -16,7 +16,9 @@ router = APIRouter()
 @router.post("", response_model=LectureCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_lecture(lecture_in: LectureCreate, db: Session = Depends(get_db)):
     import redis
+    from sqlalchemy.exc import IntegrityError
     from app.core.config import settings
+    from app.models.note import Note
     
     try:
         video_id = YouTubeService.extract_video_id(str(lecture_in.youtube_url))
@@ -28,17 +30,39 @@ def create_lecture(lecture_in: LectureCreate, db: Session = Depends(get_db)):
     redis_client = redis.from_url(settings.REDIS_URL)
     lock_key = f"lock:youtube_acquisition:{video_id}"
     
+    # Protect race conditions in lecture/job creation
     with redis_client.lock(lock_key, timeout=10, blocking_timeout=5):
         lecture = db.query(Lecture).filter(Lecture.youtube_video_id == video_id).first()
         if not lecture:
             lecture = Lecture(youtube_video_id=video_id, youtube_url=normalized_url, status="pending")
             db.add(lecture)
-            db.commit()
-            db.refresh(lecture)
-        else:
-            existing_job = db.query(ProcessingJob).filter(ProcessingJob.lecture_id == lecture.id).order_by(ProcessingJob.created_at.desc()).first()
-            if existing_job and existing_job.status in ["queued", "processing", "completed"]:
-                return LectureCreateResponse(lecture_id=lecture.id, job_id=existing_job.id, status=existing_job.status)
+            try:
+                db.commit()
+                db.refresh(lecture)
+            except IntegrityError:
+                db.rollback()
+                lecture = db.query(Lecture).filter(Lecture.youtube_video_id == video_id).first()
+        
+        # Check active jobs
+        active_job = db.query(ProcessingJob).filter(
+            ProcessingJob.lecture_id == lecture.id,
+            ProcessingJob.status.in_(["queued", "processing"])
+        ).first()
+        
+        if active_job:
+            return LectureCreateResponse(lecture_id=lecture.id, job_id=active_job.id, status=active_job.status)
+            
+        # Check completed jobs matching current version
+        completed_job = db.query(ProcessingJob).filter(
+            ProcessingJob.lecture_id == lecture.id,
+            ProcessingJob.status == "completed"
+        ).order_by(ProcessingJob.created_at.desc()).first()
+        
+        if completed_job:
+            # Verify Note version matches PIPELINE_VERSION
+            note = db.query(Note).filter(Note.lecture_id == lecture.id).order_by(Note.version.desc()).first()
+            if note and note.schema_version == settings.PIPELINE_VERSION:
+                return LectureCreateResponse(lecture_id=lecture.id, job_id=completed_job.id, status=completed_job.status)
 
         job = ProcessingJob(lecture_id=lecture.id, status="queued", current_stage="created")
         db.add(job)
@@ -82,5 +106,6 @@ def get_lecture(lecture_id: str, db: Session = Depends(get_db)):
             },
         )
     return lecture
+
 
 

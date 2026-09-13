@@ -192,9 +192,33 @@ class PipelineOrchestrator:
 
         log.info("Fetching metadata")
         try:
+            from app.services.youtube_acquisition import YouTubeAcquisitionBlocked
             meta = self.youtube.fetch_metadata(lecture.youtube_video_id)
-        except YouTubeSourceError as e:
-            raise PipelineError(str(e), "SOURCE_UNAVAILABLE", is_permanent=True)
+            
+            lecture.title = meta.title
+            lecture.channel_name = meta.channel_name
+            lecture.duration_seconds = meta.duration_seconds
+            lecture.thumbnail_url = meta.thumbnail_url
+            lecture.description = meta.description
+            
+            self.db.commit()
+            log.info("Metadata fetched", title=lecture.title, duration=lecture.duration_seconds)
+            
+        except ImportError:
+            pass
+        except Exception as e:
+            from app.services.youtube_acquisition import YouTubeAcquisitionBlocked
+            from app.services.youtube import YouTubeSourceError
+            if isinstance(e, YouTubeAcquisitionBlocked):
+                log.warning("YouTube bot block during metadata, falling back to basic info")
+                lecture.title = f"YouTube Video ({lecture.youtube_video_id})"
+                lecture.channel_name = "Unknown Channel"
+                lecture.duration_seconds = 0
+                self.db.commit()
+                return
+            if isinstance(e, YouTubeSourceError):
+                raise PipelineError(str(e), "SOURCE_UNAVAILABLE", is_permanent=True)
+            raise e
 
         lecture.title = meta.title
         lecture.channel_name = meta.channel_name
@@ -318,6 +342,7 @@ class PipelineOrchestrator:
 
         try:
             to_process = []
+            existing_count = 0
             for cand in candidates:
                 existing = self.db.query(VisualEvent).filter(
                     VisualEvent.lecture_id == lecture.id,
@@ -325,12 +350,13 @@ class PipelineOrchestrator:
                     VisualEvent.frame_hash == cand['frame_hash']
                 ).first()
                 if existing:
+                    existing_count += 1
                     log.info("Visual event already processed, skipping", timestamp=cand['timestamp'])
                 else:
                     to_process.append(cand)
 
             if not to_process:
-                return
+                return existing_count > 0
 
             batch_size = getattr(settings, 'VISION_MAX_IMAGES_PER_REQUEST', 5)
             concurrency = getattr(settings, 'VISION_CONCURRENCY', 4)
@@ -391,7 +417,7 @@ class PipelineOrchestrator:
             self.db.commit()
             log.info('visual_analysis_total', duration_s=round(time.time()-t0, 1), new_events=new_events_count)
             
-            if new_events_count > 0:
+            if new_events_count > 0 or existing_count > 0:
                 return True
                 
             return False
@@ -452,17 +478,17 @@ class PipelineOrchestrator:
             self.db.commit()
             log.info("Derived single chapter created")
 
-    def _stage_notes(self, lecture: Lecture, log) -> Note:
+    def _stage_notes(self, lecture: Lecture, log, force_regenerate: bool = False) -> Note:
         """Generate structured notes via AI. Returns the Note record.
         Skips if notes already exist for this lecture."""
         existing = (
             self.db.query(Note)
             .filter(Note.lecture_id == lecture.id)
-            .order_by(Note.version.desc())
+            .order_by(Note.created_at.desc())
             .first()
         )
-        if existing:
-            log.info("Notes already exist, skipping", version=existing.version)
+        if existing and not force_regenerate:
+            log.info("Notes already exist, skipping generation", note_id=str(existing.id))
             return existing
 
         # Load transcript segments for context
@@ -508,9 +534,12 @@ class PipelineOrchestrator:
             raise PipelineError(str(e), "AI_GENERATION_FAILED")
 
         # Persist
+        latest_note = self.db.query(Note).filter(Note.lecture_id == lecture.id).order_by(Note.version.desc()).first()
+        next_version = (latest_note.version + 1) if latest_note else 1
+        
         note = Note(
             lecture_id=lecture.id,
-            version=1,
+            version=next_version,
             schema_version="1.0",
             content_json=validated_notes.model_dump(),
         )
@@ -572,6 +601,13 @@ class PipelineOrchestrator:
         # Clean up temp PDF
         MediaService.cleanup_file(pdf_path)
         log.info("PDF artifact stored", artifact_id=str(artifact.id), size=stored.size_bytes)
+
+
+
+
+
+
+
 
 
 

@@ -18,15 +18,24 @@ class LocalVideoRequest(BaseModel):
 
 @router.post("/process-local-video")
 def process_local_video(request: LocalVideoRequest, db: Session = Depends(get_db)):
-    if not os.path.exists(request.local_path):
-        raise HTTPException(status_code=400, detail="Local file not found")
+    if not getattr(settings, 'YOUTUBE_MEDIA_CACHE_ENABLED', False):
+        raise HTTPException(status_code=403, detail="Test endpoint disabled in production")
+        
+    allowed_dir = os.path.abspath("./data/test-videos")
+    target_file = os.path.abspath(request.local_path)
+    
+    if not target_file.startswith(allowed_dir):
+        raise HTTPException(status_code=403, detail="Path must be within allowed test-videos directory")
+        
+    if not os.path.exists(target_file):
+        raise HTTPException(status_code=404, detail="Local file not found")
         
     cache_dir = getattr(settings, 'YOUTUBE_MEDIA_CACHE_DIR', './data/youtube-cache')
     video_dir = os.path.join(cache_dir, request.youtube_video_id)
     os.makedirs(video_dir, exist_ok=True)
     dest = os.path.join(video_dir, "video.mp4")
     
-    shutil.copy(request.local_path, dest)
+    shutil.copy(target_file, dest)
     
     lecture = db.query(Lecture).filter(Lecture.youtube_video_id == request.youtube_video_id).first()
     if not lecture:
