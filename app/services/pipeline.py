@@ -127,8 +127,8 @@ class PipelineOrchestrator:
             self._stage_metadata(lecture, log)
 
             # Stage 1.5: Caption Extraction
-            self._update_job(job, "caption_extraction")
-            captions_extracted = self._stage_caption_extraction(lecture, log)
+            self._update_job(job, "transcript_acquisition")
+            captions_extracted = self._stage_transcript_acquisition(lecture, log)
 
             if captions_extracted:
                 log.info("Stage media_preparation skipped reason=captions_available")
@@ -192,7 +192,8 @@ class PipelineOrchestrator:
         self.db.commit()
         log.info("Metadata persisted", title=meta.title)
 
-    def _stage_caption_extraction(self, lecture: Lecture, log) -> bool:
+    def _stage_transcript_acquisition(self, lecture: Lecture, log) -> bool:
+        "\"Try to fetch captions from YouTube to bypass audio download + whisper."\"
         """Extract existing captions to bypass media and Whisper stages.
         Returns True if successful or skipped due to existing segments, False otherwise."""
         existing = (
@@ -517,5 +518,6 @@ class PipelineOrchestrator:
         # Clean up temp PDF
         MediaService.cleanup_file(pdf_path)
         log.info("PDF artifact stored", artifact_id=str(artifact.id), size=stored.size_bytes)
+
 
 
