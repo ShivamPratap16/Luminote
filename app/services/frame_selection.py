@@ -55,11 +55,11 @@ class FrameSelectionService:
             logger.info('frame extraction started', out_dir=out_dir)
             fps = 1.0 / self.interval
             ffmpeg_cmd = [
-                'ffmpeg', '-y', '-i', local_video_path,
+                'ffmpeg', '-y', '-i', local_video_path.replace('\\', '/'),
                 '-vf', f'fps={fps}', 
-                '-vsync', 'vfr',
+                '-fps_mode', 'vfr',
                 '-q:v', '2',
-                os.path.join(out_dir, 'frame_%05d.jpg')
+                os.path.join(out_dir, 'frame_%05d.jpg').replace('\\', '/')
             ]
             
             try:
@@ -110,3 +110,5 @@ class FrameSelectionService:
                     logger.info('cleanup completed', file=local_video_path)
                 except Exception as e:
                     logger.warning('Failed to cleanup local video', file=local_video_path, error=str(e))
+
+
