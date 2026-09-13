@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ notes.title }}</title>
+    <style>
+        @page {
+            margin: 2cm;
+            size: A4;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 11pt;
+            line-height: 1.6;
+            color: #1a1a1a;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #2563eb;
+        }
+
+        .header h1 {
+            font-size: 22pt;
+            color: #1e293b;
+            margin-bottom: 8px;
+        }
+
+        .header .meta {
+            font-size: 9pt;
+            color: #64748b;
+        }
+
+        /* Overview */
+        .overview {
+            background: #f0f9ff;
+            border-left: 4px solid #2563eb;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .overview h2 {
+            font-size: 13pt;
+            color: #2563eb;
+            margin-bottom: 6px;
+        }
+
+        .overview p {
+            font-size: 10.5pt;
+            color: #334155;
+        }
+
+        /* Section */
+        .section {
+            margin-bottom: 28px;
+            page-break-inside: avoid;
+        }
+
+        .section h2 {
+            font-size: 15pt;
+            color: #1e293b;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 6px;
+            margin-bottom: 12px;
+        }
+
+        .section-summary {
+            margin-bottom: 12px;
+            color: #334155;
+        }
+
+        /* Key Points */
+        .key-points {
+            margin-bottom: 12px;
+        }
+
+        .key-points h3 {
+            font-size: 11pt;
+            color: #2563eb;
+            margin-bottom: 6px;
+        }
+
+        .key-points ul {
+            padding-left: 24px;
+        }
+
+        .key-points li {
+            margin-bottom: 4px;
+        }
+
+        /* Examples */
+        .examples {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-bottom: 12px;
+        }
+
+        .examples h3 {
+            font-size: 10pt;
+            color: #7c3aed;
+            margin-bottom: 6px;
+        }
+
+        .examples ul {
+            padding-left: 20px;
+        }
+
+        .examples li {
+            margin-bottom: 4px;
+            font-size: 10pt;
+        }
+
+        /* Terms */
+        .terms {
+            margin-bottom: 12px;
+        }
+
+        .terms h3 {
+            font-size: 10pt;
+            color: #059669;
+            margin-bottom: 6px;
+        }
+
+        .terms .term-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .terms .term {
+            background: #ecfdf5;
+            color: #065f46;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 9pt;
+            border: 1px solid #a7f3d0;
+        }
+
+        /* Timestamps */
+        .timestamp {
+            font-size: 8.5pt;
+            color: #6366f1;
+            font-family: monospace;
+        }
+
+        /* Takeaways */
+        .takeaways {
+            background: #fefce8;
+            border-left: 4px solid #eab308;
+            padding: 16px 20px;
+            margin-top: 30px;
+            border-radius: 0 8px 8px 0;
+            page-break-inside: avoid;
+        }
+
+        .takeaways h2 {
+            font-size: 13pt;
+            color: #a16207;
+            margin-bottom: 8px;
+        }
+
+        .takeaways ul {
+            padding-left: 20px;
+        }
+
+        .takeaways li {
+            margin-bottom: 4px;
+        }
+
+        /* Footer */
+        .footer {
+            margin-top: 40px;
+            padding-top: 12px;
+            border-top: 1px solid #e2e8f0;
+            text-align: center;
+            font-size: 8pt;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>{{ notes.title }}</h1>
+        {% if source_url %}
+        <div class="meta">Source: {{ source_url }}</div>
+        {% endif %}
+        <div class="meta">Generated {{ generated_at }}</div>
+    </div>
+
+    <div class="overview">
+        <h2>Overview</h2>
+        <p>{{ notes.overview }}</p>
+    </div>
+
+    {% for section in notes.sections %}
+    <div class="section">
+        <h2>{{ loop.index }}. {{ section.title }}</h2>
+
+        <p class="section-summary">{{ section.summary }}</p>
+
+        {% if section.timestamps %}
+        <p class="timestamp">
+            ⏱ {% for ts in section.timestamps %}{{ format_timestamp(ts) }}{% if not loop.last %}, {% endif %}{% endfor %}
+        </p>
+        {% endif %}
+
+        {% if section.key_points %}
+        <div class="key-points">
+            <h3>Key Points</h3>
+            <ul>
+                {% for point in section.key_points %}
+                <li>{{ point }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if section.examples %}
+        <div class="examples">
+            <h3>Examples</h3>
+            <ul>
+                {% for example in section.examples %}
+                <li>{{ example }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if section.important_terms %}
+        <div class="terms">
+            <h3>Important Terms</h3>
+            <div class="term-list">
+                {% for term in section.important_terms %}
+                <span class="term">{{ term }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    {% if notes.final_takeaways %}
+    <div class="takeaways">
+        <h2>Final Takeaways</h2>
+        <ul>
+            {% for takeaway in notes.final_takeaways %}
+            <li>{{ takeaway }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="footer">
+        AI Lecture Notes Platform &mdash; Generated from lecture transcript
+    </div>
+</body>
+</html>

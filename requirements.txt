@@ -1,0 +1,25 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic>=2.5.2
+pydantic-settings>=2.1.0
+sqlalchemy>=2.0.23
+alembic>=1.13.0
+psycopg[binary]
+celery==5.3.6
+redis==5.0.1
+httpx==0.25.2
+python-dotenv==1.0.0
+pytest==7.4.3
+structlog==23.2.0
+
+# Milestone 5: Media & Transcription
+yt-dlp>=2024.1.0
+faster-whisper>=1.0.0
+
+# Milestone 6: AI Provider (NVIDIA NIM uses OpenAI-compatible SDK)
+openai>=1.6.0
+# google-generativeai>=0.8.0  # uncomment if using Google AI provider
+
+# Milestone 7: PDF Generation
+jinja2>=3.1.2
+playwright>=1.40.0
