@@ -105,10 +105,7 @@ class PipelineOrchestrator:
         logger.info("Job state updated", job_id=str(job.id), stage=stage, status=status)
 
     def run(self, job_id: str) -> None:
-        """Run the full pipeline for a job.
-
-        This is the main entry point called by the worker.
-        """
+        import time
         job = self.db.query(ProcessingJob).filter(ProcessingJob.id == job_id).first()
         if not job:
             raise PipelineError("Job not found", "INTERNAL_ERROR", is_permanent=True)
@@ -120,13 +117,18 @@ class PipelineOrchestrator:
         log = logger.bind(job_id=str(job.id), lecture_id=str(lecture.id))
         log.info("Starting pipeline")
 
-        audio_path: Optional[str] = None
+        audio_path = None
+        t_start = time.time()
+        
         try:
             # Stage 1: Metadata
+            t0 = time.time()
             self._update_job(job, "metadata")
             self._stage_metadata(lecture, log)
+            log.info("metrics", stage="metadata", duration_s=round(time.time()-t0, 1))
 
-            # Stage 1.5: Caption Extraction
+            # Stage 1.5/2/3: Transcript
+            t0 = time.time()
             self._update_job(job, "transcript_acquisition")
             captions_extracted = self._stage_transcript_acquisition(lecture, log)
 
@@ -134,38 +136,49 @@ class PipelineOrchestrator:
                 log.info("Stage media_preparation skipped reason=captions_available")
                 log.info("Stage transcription skipped reason=captions_available")
             else:
-                # Stage 2: Media preparation
                 self._update_job(job, "media_preparation")
                 audio_path = self._stage_media(lecture, log)
-
-                # Stage 3: Transcription
                 self._update_job(job, "transcription")
                 self._stage_transcription(lecture, audio_path, log)
+            log.info("metrics", stage="transcript_pipeline", duration_s=round(time.time()-t0, 1))
 
-            # Stage 3.5: Visual Analysis
-            self._update_job(job, "visual_analysis")
-            self._stage_visual_analysis(job, lecture, log)
-
-            # Stage 4: Chapters
+            # FAST PATH: Generate Basic Notes immediately
+            t0 = time.time()
             self._update_job(job, "chapters")
             self._stage_chapters(lecture, log)
-
-            # Stage 5: Note generation
+            
             self._update_job(job, "note_generation")
             note = self._stage_notes(lecture, log)
-
-            # Stage 6: PDF generation
+            
             self._update_job(job, "pdf_generation")
             self._stage_pdf(lecture, note, log)
+            log.info("metrics", stage="fast_notes", duration_s=round(time.time()-t0, 1))
+
+            # Stage 3.5: Visual Analysis (ENHANCED PATH)
+            t0 = time.time()
+            self._update_job(job, "visual_analysis")
+            visuals_added = self._stage_visual_analysis(job, lecture, log)
+            log.info("metrics", stage="visual_analysis", duration_s=round(time.time()-t0, 1))
+
+            # If visuals were successfully added, generate Enhanced Notes
+            if visuals_added:
+                log.info("Visuals were added, generating Enhanced Notes")
+                t0 = time.time()
+                self._update_job(job, "note_generation_enhanced")
+                note_enhanced = self._stage_notes(lecture, log, force_regenerate=True)
+                
+                self._update_job(job, "pdf_generation_enhanced")
+                self._stage_pdf(lecture, note_enhanced, log)
+                log.info("metrics", stage="enhanced_notes", duration_s=round(time.time()-t0, 1))
 
             # Done
             lecture.status = "completed"
             self.db.commit()
             self._update_job(job, "completed", status="completed")
+            log.info("metrics", stage="total", duration_s=round(time.time()-t_start, 1))
             log.info("Pipeline completed successfully")
 
         finally:
-            # Always clean up temp audio
             if audio_path:
                 MediaService.cleanup_file(audio_path)
 
@@ -272,8 +285,15 @@ class PipelineOrchestrator:
         from app.services.frame_selection import FrameSelectionService
         from app.services.vision import VisionService
         from app.models.visual_event import VisualEvent
+        from app.core.config import settings
         import shutil
         import os
+        import asyncio
+        import time
+
+        if not getattr(settings, 'VISION_ENABLED', True):
+            log.info("Visual analysis disabled via config")
+            return
 
         frame_service = FrameSelectionService()
         vision_service = VisionService()
@@ -281,16 +301,22 @@ class PipelineOrchestrator:
         # Extract frames and find visual changes
         log.info("Starting frame selection")
         out_dir = None
+        
+        t0 = time.time()
+        
+        transcript_segments = lecture.transcript_segments
+
         try:
-            candidates, out_dir = frame_service.select_frames(lecture.youtube_video_id)
+            candidates, out_dir = frame_service.select_frames(lecture.youtube_video_id, transcript_segments)
         except Exception as e:
             log.warning("Frame selection failed, skipping visual analysis", error=str(e))
             self._update_job(job, "visual_analysis", status="retryable_failed")
             return
 
         try:
+            # Filter out already processed
+            to_process = []
             for cand in candidates:
-                # Check if this exact event is already processed (Idempotency)
                 existing = self.db.query(VisualEvent).filter(
                     VisualEvent.lecture_id == lecture.id,
                     VisualEvent.timestamp == cand['timestamp'],
@@ -298,49 +324,77 @@ class PipelineOrchestrator:
                 ).first()
                 if existing:
                     log.info("Visual event already processed, skipping", timestamp=cand['timestamp'])
-                    continue
+                else:
+                    to_process.append(cand)
 
-                log.info("Analyzing frame with NVIDIA Vision", timestamp=cand['timestamp'])
-                
-                nearby_segments = self.db.query(TranscriptSegment).filter(
-                    TranscriptSegment.lecture_id == lecture.id,
-                    TranscriptSegment.start_seconds >= float(cand['timestamp']) - 30,
-                    TranscriptSegment.end_seconds <= float(cand['timestamp']) + 30
-                ).all()
-                context_text = " ".join([s.text for s in nearby_segments])
+            if not to_process:
+                return
 
-                try:
-                    analysis = vision_service.analyze_frame(cand['frame_path'], context=context_text)
-                    if not analysis:
-                        continue
-                    
-                    storage_key = None
+            batch_size = getattr(settings, 'VISION_MAX_IMAGES_PER_REQUEST', 5)
+            concurrency = getattr(settings, 'VISION_CONCURRENCY', 4)
+            
+            batches = [to_process[i:i + batch_size] for i in range(0, len(to_process), batch_size)]
+            log.info('vision_batches_prepared', batches=len(batches), total_frames=len(to_process))
+            
+            semaphore = asyncio.Semaphore(concurrency)
+            
+            async def process_batch(batch):
+                async with semaphore:
                     try:
-                        stored = self.storage.store_artifact(
-                            local_path=cand['frame_path'],
-                            lecture_id=str(lecture.id),
-                            artifact_type="frames",
-                            extension="jpg"
-                        )
-                        storage_key = stored.storage_key
+                        return await vision_service.analyze_frames_batch(batch, transcript_segments)
                     except Exception as e:
-                        log.warning("Failed to persist frame to storage", error=str(e))
-                    
-                    event = VisualEvent(
-                        lecture_id=lecture.id,
-                        timestamp=cand['timestamp'],
-                        frame_hash=cand['frame_hash'],
-                        event_type=analysis.event_type,
-                        description=analysis.description,
-                        visible_text=analysis.visible_text,
-                        key_information=analysis.key_information,
-                        frame_storage_key=storage_key
-                    )
-                    self.db.add(event)
-                    self.db.commit()
-                    log.info("Visual event persisted", timestamp=cand['timestamp'], event_type=analysis.event_type)
-                except Exception as e:
-                    log.error("Failed to analyze/persist visual event", timestamp=cand['timestamp'], error=str(e))
+                        log.warning("Batch failed", error=str(e))
+                        return []
+                        
+            async def run_all():
+                tasks = [process_batch(b) for b in batches]
+                return await asyncio.gather(*tasks)
+
+            t1 = time.time()
+            results = asyncio.run(run_all())
+            t2 = time.time()
+            log.info('vision_api_completed', duration_s=round(t2-t1, 1))
+
+            new_events_count = 0
+            for batch_res in results:
+                for item in batch_res:
+                    try:
+                        storage_key = None
+                        try:
+                            stored = self.storage.store_artifact(
+                                local_path=item['frame_path'],
+                                lecture_id=str(lecture.id),
+                                artifact_type="frames",
+                                extension="jpg"
+                            )
+                            storage_key = stored.storage_key
+                        except Exception as e:
+                            log.warning("Failed to persist frame to storage", error=str(e))
+                        
+                        event = VisualEvent(
+                            lecture_id=lecture.id,
+                            timestamp=item['timestamp'],
+                            frame_hash=item['frame_hash'],
+                            event_type=item.get('event_type', 'unknown'),
+                            description=item.get('description', ''),
+                            visible_text=item.get('visible_text', []),
+                            key_information=item.get('key_information', []),
+                            frame_storage_key=storage_key
+                        )
+                        self.db.add(event)
+                        new_events_count += 1
+                    except Exception as e:
+                        log.error("Failed to parse visual event", error=str(e))
+            
+            self.db.commit()
+            log.info('visual_analysis_total', duration_s=round(time.time()-t0, 1), new_events=new_events_count)
+            
+            if new_events_count > 0:
+                # Signal to regenerate notes
+                return True
+                
+            return False
+
         finally:
             if out_dir and os.path.exists(out_dir):
                 try:
@@ -517,6 +571,10 @@ class PipelineOrchestrator:
         # Clean up temp PDF
         MediaService.cleanup_file(pdf_path)
         log.info("PDF artifact stored", artifact_id=str(artifact.id), size=stored.size_bytes)
+
+
+
+
 
 
 

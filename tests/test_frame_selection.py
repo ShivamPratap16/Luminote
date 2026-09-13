@@ -32,10 +32,12 @@ def test_frame_selection(mock_run, mock_ydl, tmp_path):
         mock_hash.side_effect = [100, 150, 150]
         
         service = FrameSelectionService(temp_dir=str(tmp_path))
+        service.min_distance = 5
         candidates, out_dir = service.select_frames('dummy_video_id')
         
         assert len(candidates) == 2
         assert mock_run.called
         assert mock_ydl_instance.extract_info.called
+
 
 

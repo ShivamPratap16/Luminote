@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     VISION_FRAME_INTERVAL_SECONDS: int = 10
     VISION_MAX_FRAMES: int = 100
     VISION_TEMP_DIR: str = "./tmp/vision"
+    VISION_ENABLED: bool = True
+    VISION_MAX_ANALYSIS_FRAMES: int = 30
+    VISION_MAX_IMAGES_PER_REQUEST: int = 5
+    VISION_CONCURRENCY: int = 4
+    VISION_TIMEOUT_SECONDS: int = 20
+    VISION_MAX_RETRIES: int = 2
+    VISION_MIN_FRAME_DISTANCE_SECONDS: int = 30
 
     # OpenAI (legacy/alternative)
     OPENAI_API_KEY: Optional[str] = None
@@ -65,5 +72,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
 
 
