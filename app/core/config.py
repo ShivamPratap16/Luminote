@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     NVIDIA_VISION_MODEL: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
     VISION_MAX_IMAGES_PER_REQUEST: int = 4
     VISION_VIDEO_MAX_HEIGHT: int = 720
+    VISION_FRAME_INTERVAL_SECONDS: int = 10
+    VISION_MAX_FRAMES: int = 100
+    VISION_TEMP_DIR: str = "./tmp/vision"
 
     # OpenAI (legacy/alternative)
     OPENAI_API_KEY: Optional[str] = None
@@ -62,4 +65,5 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
 
