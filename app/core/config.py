@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     NVIDIA_API_KEY: Optional[str] = None
     NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     NVIDIA_TEXT_MODEL: str = "openai/gpt-oss-20b"
+    NVIDIA_VISION_MODEL: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+    VISION_MAX_IMAGES_PER_REQUEST: int = 4
+    VISION_VIDEO_MAX_HEIGHT: int = 720
 
     # OpenAI (legacy/alternative)
     OPENAI_API_KEY: Optional[str] = None
@@ -55,6 +58,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = 'ignore'
 
 
 settings = Settings()
+

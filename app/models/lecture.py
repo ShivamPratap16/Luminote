@@ -21,7 +21,8 @@ class Lecture(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     jobs = relationship("ProcessingJob", back_populates="lecture")
-    transcript_segments = relationship("TranscriptSegment", back_populates="lecture")
-    chapters = relationship("LectureChapter", back_populates="lecture")
-    notes = relationship("Note", back_populates="lecture")
+    transcript_segments = relationship("TranscriptSegment", back_populates="lecture", cascade="all, delete-orphan")
+    chapters = relationship("LectureChapter", back_populates="lecture", cascade="all, delete-orphan")
+    notes = relationship("Note", back_populates="lecture", cascade="all, delete-orphan")
+    visual_events = relationship("VisualEvent", back_populates="lecture", cascade="all, delete-orphan")
     artifacts = relationship("Artifact", back_populates="lecture")

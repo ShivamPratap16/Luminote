@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from app.models.lecture import Lecture
 from app.models.job import ProcessingJob
 from app.models.transcript import TranscriptSegment
+from app.models.visual_event import VisualEvent
 from app.models.chapter import LectureChapter
 from app.models.note import Note
 from app.models.artifact import Artifact
@@ -141,6 +142,10 @@ class PipelineOrchestrator:
                 self._update_job(job, "transcription")
                 self._stage_transcription(lecture, audio_path, log)
 
+            # Stage 3.5: Visual Analysis
+            self._update_job(job, "visual_analysis")
+            self._stage_visual_analysis(lecture, log)
+
             # Stage 4: Chapters
             self._update_job(job, "chapters")
             self._stage_chapters(lecture, log)
@@ -260,6 +265,89 @@ class PipelineOrchestrator:
         self.db.add_all(db_segments)
         self.db.commit()
         log.info("Transcript segments persisted", count=len(db_segments))
+
+    
+    def _stage_visual_analysis(self, lecture: Lecture, log) -> None:
+        from app.services.frame_selection import FrameSelectionService
+        from app.services.vision import VisionService
+        from app.models.visual_event import VisualEvent
+
+        frame_service = FrameSelectionService()
+        vision_service = VisionService()
+
+        # Extract frames and find visual changes
+        log.info("Starting frame selection")
+        try:
+            candidates, out_dir = frame_service.select_frames(lecture.youtube_video_id)
+        except Exception as e:
+            log.warning("Frame selection failed, skipping visual analysis", error=str(e))
+            return
+
+        for cand in candidates:
+            # Check if this exact event is already processed (Idempotency)
+            existing = self.db.query(VisualEvent).filter(
+                VisualEvent.lecture_id == lecture.id,
+                VisualEvent.timestamp == cand['timestamp'],
+                VisualEvent.frame_hash == cand['frame_hash']
+            ).first()
+            if existing:
+                log.info("Visual event already processed, skipping", timestamp=cand['timestamp'])
+                continue
+
+            log.info("Analyzing frame with NVIDIA Vision", timestamp=cand['timestamp'])
+            
+            # Fetch nearby transcript text for context
+            nearby_segments = self.db.query(TranscriptSegment).filter(
+                TranscriptSegment.lecture_id == lecture.id,
+                TranscriptSegment.start_seconds >= float(cand['timestamp']) - 30,
+                TranscriptSegment.end_seconds <= float(cand['timestamp']) + 30
+            ).all()
+            context_text = " ".join([s.text for s in nearby_segments])
+
+            try:
+                analysis = vision_service.analyze_frame(cand['frame_path'], context=context_text)
+                if not analysis:
+                    continue
+                
+                # Store the frame image in storage for provenance
+                storage_key = None
+                try:
+                    stored = self.storage.store_artifact(
+                        local_path=cand['frame_path'],
+                        lecture_id=str(lecture.id),
+                        artifact_type="frames",
+                        extension="jpg"
+                    )
+                    storage_key = stored.storage_key
+                except Exception as e:
+                    log.warning("Failed to persist frame to storage", error=str(e))
+                
+                # Save to DB
+                event = VisualEvent(
+                    lecture_id=lecture.id,
+                    timestamp=cand['timestamp'],
+                    frame_hash=cand['frame_hash'],
+                    event_type=analysis.event_type,
+                    description=analysis.description,
+                    visible_text=analysis.visible_text,
+                    key_information=analysis.key_information,
+                    frame_storage_key=storage_key
+                )
+                self.db.add(event)
+                self.db.commit()
+                log.info("Visual event persisted", timestamp=cand['timestamp'], event_type=analysis.event_type)
+            except Exception as e:
+                log.error("Failed to analyze/persist visual event", timestamp=cand['timestamp'], error=str(e))
+                # For V1, we log and continue to the next frame rather than failing the whole pipeline
+                
+        # Clean up extracted frames
+        import shutil
+        import os
+        try:
+            if os.path.exists(out_dir):
+                shutil.rmtree(out_dir)
+        except Exception as e:
+            log.warning("Failed to clean up extracted frames", error=str(e))
 
     def _stage_chapters(self, lecture: Lecture, log) -> None:
         """Persist chapter boundaries. Uses YouTube chapters if available,
@@ -429,3 +517,5 @@ class PipelineOrchestrator:
         # Clean up temp PDF
         MediaService.cleanup_file(pdf_path)
         log.info("PDF artifact stored", artifact_id=str(artifact.id), size=stored.size_bytes)
+
+

@@ -33,6 +33,7 @@ class NotesService:
         lecture_title: str,
         transcript_segments: List[Dict[str, Any]],
         chapters: List[Dict[str, Any]] | None = None,
+        visual_events: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         """Build a controlled context object for the AI prompt.
 
@@ -43,6 +44,7 @@ class NotesService:
             "lecture": {"title": lecture_title},
             "chapters": chapters or [],
             "transcript": [],
+            "visual_events": [],
         }
 
         total_chars = 0
@@ -55,19 +57,24 @@ class NotesService:
                     "end_seconds": seg.get("end_seconds", 0),
                     "text": "[TRANSCRIPT TRUNCATED - remaining content omitted for context limit]",
                 })
-                logger.warning(
-                    "Transcript truncated for context assembly",
-                    total_chars=total_chars,
-                    max_chars=MAX_TRANSCRIPT_CHARS,
-                    segments_included=len(context["transcript"]),
-                    segments_total=len(transcript_segments),
-                )
                 break
             context["transcript"].append({
-                "start_seconds": seg.get("start_seconds", 0),
-                "end_seconds": seg.get("end_seconds", 0),
+                "start_seconds": float(seg.get("start_seconds", 0)),
+                "end_seconds": float(seg.get("end_seconds", 0)),
                 "text": text,
             })
+
+        if visual_events:
+            for ve in visual_events:
+                # Condense visual event for text AI
+                # e.g. [14:20 - Diagram] Shows relationship...
+                v_text = f"[{float(ve.get('timestamp', 0)):.1f} - {ve.get('event_type', 'Visual')}] {ve.get('description', '')}"
+                if ve.get("visible_text"):
+                    v_text += f" Visible text: {', '.join(ve['visible_text'])}."
+                context["visual_events"].append({
+                    "timestamp": float(ve.get("timestamp", 0)),
+                    "context": v_text
+                })
 
         return context
 
@@ -76,19 +83,11 @@ class NotesService:
         lecture_title: str,
         transcript_segments: List[Dict[str, Any]],
         chapters: List[Dict[str, Any]] | None = None,
+        visual_events: List[Dict[str, Any]] | None = None,
         max_retries: int = 2,
     ) -> StructuredNotes:
-        """Generate and validate structured notes.
-
-        1. Build context from transcript + chapters
-        2. Call AI provider
-        3. Validate response against StructuredNotes schema
-        4. Retry on validation failure (AI may produce slightly different output)
-
-        Returns a validated StructuredNotes model.
-        Raises NotesGenerationError if all attempts fail.
-        """
-        context = self.build_context(lecture_title, transcript_segments, chapters)
+        """Generate and validate structured notes."""
+        context = self.build_context(lecture_title, transcript_segments, chapters, visual_events)
 
         last_error: Optional[Exception] = None
 
@@ -136,3 +135,6 @@ class NotesService:
         raise NotesGenerationError(
             f"Failed to generate valid notes after {max_retries} attempts: {last_error}"
         )
+
+
+
