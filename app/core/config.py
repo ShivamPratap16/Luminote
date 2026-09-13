@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Media / yt-dlp
     MEDIA_TEMP_DIR: str = "./tmp/media"
     MEDIA_MAX_DURATION_SECONDS: int = 14400  # 4 hours
+    YOUTUBE_MEDIA_CACHE_ENABLED: bool = True
+    YOUTUBE_MEDIA_CACHE_DIR: str = "./data/youtube-cache"
+    PIPELINE_VERSION: str = "v2"
 
     # Transcription
     WHISPER_MODEL_SIZE: str = "base"
@@ -72,6 +75,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
 
 
 

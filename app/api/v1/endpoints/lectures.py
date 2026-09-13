@@ -15,60 +15,38 @@ router = APIRouter()
 
 @router.post("", response_model=LectureCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_lecture(lecture_in: LectureCreate, db: Session = Depends(get_db)):
-    """Create a lecture from a YouTube URL and enqueue processing.
-
-    - Validates and normalizes the URL
-    - Creates or reuses the lecture record (deduplication by video ID)
-    - Creates a new processing job
-    - Dispatches the job to the Celery worker
-    - Returns immediately
-    """
-    # Validate and normalize
+    import redis
+    from app.core.config import settings
+    
     try:
         video_id = YouTubeService.extract_video_id(str(lecture_in.youtube_url))
     except YouTubeValidationError:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": {
-                    "code": "INVALID_YOUTUBE_URL",
-                    "message": "The supplied URL is not a supported YouTube URL.",
-                }
-            },
-        )
+        raise HTTPException(status_code=400, detail={"error": {"code": "INVALID_YOUTUBE_URL"}})
 
     normalized_url = YouTubeService.normalize_url(video_id)
+    
+    redis_client = redis.from_url(settings.REDIS_URL)
+    lock_key = f"lock:youtube_acquisition:{video_id}"
+    
+    with redis_client.lock(lock_key, timeout=10, blocking_timeout=5):
+        lecture = db.query(Lecture).filter(Lecture.youtube_video_id == video_id).first()
+        if not lecture:
+            lecture = Lecture(youtube_video_id=video_id, youtube_url=normalized_url, status="pending")
+            db.add(lecture)
+            db.commit()
+            db.refresh(lecture)
+        else:
+            existing_job = db.query(ProcessingJob).filter(ProcessingJob.lecture_id == lecture.id).order_by(ProcessingJob.created_at.desc()).first()
+            if existing_job and existing_job.status in ["queued", "processing", "completed"]:
+                return LectureCreateResponse(lecture_id=lecture.id, job_id=existing_job.id, status=existing_job.status)
 
-    # Deduplication: reuse existing lecture if same video ID
-    lecture = db.query(Lecture).filter(Lecture.youtube_video_id == video_id).first()
-    if not lecture:
-        lecture = Lecture(
-            youtube_video_id=video_id,
-            youtube_url=normalized_url,
-            status="pending",
-        )
-        db.add(lecture)
+        job = ProcessingJob(lecture_id=lecture.id, status="queued", current_stage="created")
+        db.add(job)
         db.commit()
-        db.refresh(lecture)
+        db.refresh(job)
 
-    # Create a new processing job
-    job = ProcessingJob(
-        lecture_id=lecture.id,
-        status="queued",
-        current_stage="created",
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-
-    # Dispatch to Celery (non-blocking)
     process_lecture_job.delay(str(job.id))
-
-    return LectureCreateResponse(
-        lecture_id=lecture.id,
-        job_id=job.id,
-        status=job.status,
-    )
+    return LectureCreateResponse(lecture_id=lecture.id, job_id=job.id, status=job.status)
 
 
 @router.get("", response_model=List[LectureResponse])
@@ -104,3 +82,5 @@ def get_lecture(lecture_id: str, db: Session = Depends(get_db)):
             },
         )
     return lecture
+
+

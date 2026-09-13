@@ -283,6 +283,7 @@ class PipelineOrchestrator:
     
     def _stage_visual_analysis(self, job: ProcessingJob, lecture: Lecture, log) -> None:
         from app.services.frame_selection import FrameSelectionService
+        from app.services.youtube_acquisition import YouTubeAcquisitionBlocked
         from app.services.vision import VisionService
         from app.models.visual_event import VisualEvent
         from app.core.config import settings
@@ -298,23 +299,24 @@ class PipelineOrchestrator:
         frame_service = FrameSelectionService()
         vision_service = VisionService()
 
-        # Extract frames and find visual changes
         log.info("Starting frame selection")
         out_dir = None
         
         t0 = time.time()
-        
         transcript_segments = lecture.transcript_segments
 
         try:
             candidates, out_dir = frame_service.select_frames(lecture.youtube_video_id, transcript_segments)
+        except YouTubeAcquisitionBlocked as e:
+            log.error("Frame selection blocked by YouTube", error_type="YOUTUBE_ACQUISITION_BLOCKED", error=str(e))
+            self._update_job(job, "visual_analysis", status="blocked")
+            return
         except Exception as e:
             log.warning("Frame selection failed, skipping visual analysis", error=str(e))
             self._update_job(job, "visual_analysis", status="retryable_failed")
             return
 
         try:
-            # Filter out already processed
             to_process = []
             for cand in candidates:
                 existing = self.db.query(VisualEvent).filter(
@@ -390,7 +392,6 @@ class PipelineOrchestrator:
             log.info('visual_analysis_total', duration_s=round(time.time()-t0, 1), new_events=new_events_count)
             
             if new_events_count > 0:
-                # Signal to regenerate notes
                 return True
                 
             return False
@@ -571,6 +572,9 @@ class PipelineOrchestrator:
         # Clean up temp PDF
         MediaService.cleanup_file(pdf_path)
         log.info("PDF artifact stored", artifact_id=str(artifact.id), size=stored.size_bytes)
+
+
+
 
 
 
