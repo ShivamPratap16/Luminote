@@ -18,16 +18,15 @@ from app.models.transcript import TranscriptSegment
 from app.models.visual_event import VisualEvent
 from app.models.chapter import LectureChapter
 from app.models.note import Note
-from app.models.artifact import Artifact
 from app.schemas.notes import StructuredNotes
 
 from app.services.youtube import YouTubeService, YouTubeSourceError
 from app.services.media import MediaService, MediaPreparationError
 from app.services.transcription import TranscriptionService, TranscriptionError
 from app.services.notes import NotesService, NotesGenerationError
-from app.services.pdf import PdfService, PdfGenerationError
 from app.services.storage import StorageService
 from app.services.ai_provider import create_ai_provider
+from app.services.temp_lifecycle import TempLifecycleService
 
 logger = structlog.get_logger(__name__)
 
@@ -38,7 +37,6 @@ STAGE_PROGRESS = {
     "transcription": 35,
     "chapters": 45,
     "note_generation": 75,
-    "pdf_generation": 95,
     "completed": 100,
 }
 
@@ -71,14 +69,12 @@ class PipelineOrchestrator:
         media_service: Optional[MediaService] = None,
         transcription_service: Optional[TranscriptionService] = None,
         notes_service: Optional[NotesService] = None,
-        pdf_service: Optional[PdfService] = None,
         storage_service: Optional[StorageService] = None,
     ):
         self.db = db
         self.youtube = youtube_service or YouTubeService()
         self.media = media_service or MediaService()
         self.transcription = transcription_service or TranscriptionService()
-        self.pdf = pdf_service or PdfService()
         self.storage = storage_service or StorageService()
 
         # Notes service requires AI provider; create lazily
@@ -117,10 +113,15 @@ class PipelineOrchestrator:
         log = logger.bind(job_id=str(job.id), lecture_id=str(lecture.id))
         log.info("Starting pipeline")
 
-        audio_path = None
+        job_dir = None
         t_start = time.time()
         
         try:
+            # Create a job-scoped temporary directory for all processing
+            job_dir = TempLifecycleService.create_job_dir(job_id)
+            TempLifecycleService.check_machine_disk()
+            TempLifecycleService.check_app_storage()
+            
             # Stage 1: Metadata
             t0 = time.time()
             self._update_job(job, "metadata")
@@ -137,7 +138,7 @@ class PipelineOrchestrator:
                 log.info("Stage transcription skipped reason=captions_available")
             else:
                 self._update_job(job, "media_preparation")
-                audio_path = self._stage_media(lecture, log)
+                audio_path = self._stage_media(lecture, job_dir, log)
                 self._update_job(job, "transcription")
                 self._stage_transcription(lecture, audio_path, log)
             log.info("metrics", stage="transcript_pipeline", duration_s=round(time.time()-t0, 1))
@@ -148,16 +149,13 @@ class PipelineOrchestrator:
             self._stage_chapters(lecture, log)
             
             self._update_job(job, "note_generation")
-            note = self._stage_notes(lecture, log)
-            
-            self._update_job(job, "pdf_generation")
-            self._stage_pdf(lecture, note, log)
+            self._stage_notes(lecture, log)
             log.info("metrics", stage="fast_notes", duration_s=round(time.time()-t0, 1))
 
             # Stage 3.5: Visual Analysis (ENHANCED PATH)
             t0 = time.time()
             self._update_job(job, "visual_analysis")
-            visuals_added = self._stage_visual_analysis(job, lecture, log)
+            visuals_added = self._stage_visual_analysis(job, lecture, job_dir, log)
             log.info("metrics", stage="visual_analysis", duration_s=round(time.time()-t0, 1))
 
             # If visuals were successfully added, generate Enhanced Notes
@@ -165,10 +163,7 @@ class PipelineOrchestrator:
                 log.info("Visuals were added, generating Enhanced Notes")
                 t0 = time.time()
                 self._update_job(job, "note_generation_enhanced")
-                note_enhanced = self._stage_notes(lecture, log, force_regenerate=True)
-                
-                self._update_job(job, "pdf_generation_enhanced")
-                self._stage_pdf(lecture, note_enhanced, log)
+                self._stage_notes(lecture, log, force_regenerate=True)
                 log.info("metrics", stage="enhanced_notes", duration_s=round(time.time()-t0, 1))
 
             # Done
@@ -179,8 +174,8 @@ class PipelineOrchestrator:
             log.info("Pipeline completed successfully")
 
         finally:
-            if audio_path:
-                MediaService.cleanup_file(audio_path)
+            if job_dir:
+                TempLifecycleService.cleanup_job_dir(job_id)
 
     # ── Stage implementations ──────────────────────────────────────
 
@@ -263,11 +258,11 @@ class PipelineOrchestrator:
         log.info("Caption extraction completed source=youtube", count=len(db_segments))
         return True
 
-    def _stage_media(self, lecture: Lecture, log) -> str:
+    def _stage_media(self, lecture: Lecture, job_dir: str, log) -> str:
         """Download and prepare audio. Returns the local audio file path."""
         log.info("Preparing audio")
         try:
-            result = self.media.prepare_audio(lecture.youtube_video_id)
+            result = self.media.prepare_audio(lecture.youtube_video_id, job_dir=job_dir)
         except MediaPreparationError as e:
             raise PipelineError(str(e), "SOURCE_UNAVAILABLE")
         log.info("Audio prepared", duration=result.duration_seconds)
@@ -305,14 +300,13 @@ class PipelineOrchestrator:
         log.info("Transcript segments persisted", count=len(db_segments))
 
     
-    def _stage_visual_analysis(self, job: ProcessingJob, lecture: Lecture, log) -> None:
-        from app.services.frame_selection import FrameSelectionService
+    def _stage_visual_analysis(self, job: ProcessingJob, lecture: Lecture, job_dir: str, log) -> bool:
+        log.info("Visual analysis temporarily disabled per user request")
+        return False
         from app.services.youtube_acquisition import YouTubeAcquisitionBlocked
         from app.services.vision import VisionService
         from app.models.visual_event import VisualEvent
         from app.core.config import settings
-        import shutil
-        import os
         import asyncio
         import time
 
@@ -324,13 +318,12 @@ class PipelineOrchestrator:
         vision_service = VisionService()
 
         log.info("Starting frame selection")
-        out_dir = None
         
         t0 = time.time()
         transcript_segments = lecture.transcript_segments
 
         try:
-            candidates, out_dir = frame_service.select_frames(lecture.youtube_video_id, transcript_segments)
+            candidates, _ = frame_service.select_frames(lecture.youtube_video_id, transcript_segments, job_dir=job_dir)
         except YouTubeAcquisitionBlocked as e:
             log.error("Frame selection blocked by YouTube", error_type="YOUTUBE_ACQUISITION_BLOCKED", error=str(e))
             self._update_job(job, "visual_analysis", status="blocked")
@@ -340,95 +333,76 @@ class PipelineOrchestrator:
             self._update_job(job, "visual_analysis", status="retryable_failed")
             return
 
-        try:
-            to_process = []
-            existing_count = 0
-            for cand in candidates:
-                existing = self.db.query(VisualEvent).filter(
-                    VisualEvent.lecture_id == lecture.id,
-                    VisualEvent.timestamp == cand['timestamp'],
-                    VisualEvent.frame_hash == cand['frame_hash']
-                ).first()
-                if existing:
-                    existing_count += 1
-                    log.info("Visual event already processed, skipping", timestamp=cand['timestamp'])
-                else:
-                    to_process.append(cand)
+        to_process = []
+        existing_count = 0
+        for cand in candidates:
+            existing = self.db.query(VisualEvent).filter(
+                VisualEvent.lecture_id == lecture.id,
+                VisualEvent.timestamp == cand['timestamp'],
+                VisualEvent.frame_hash == cand['frame_hash']
+            ).first()
+            if existing:
+                existing_count += 1
+                log.info("Visual event already processed, skipping", timestamp=cand['timestamp'])
+            else:
+                to_process.append(cand)
 
-            if not to_process:
-                return existing_count > 0
+        if not to_process:
+            return existing_count > 0
 
-            batch_size = getattr(settings, 'VISION_MAX_IMAGES_PER_REQUEST', 5)
-            concurrency = getattr(settings, 'VISION_CONCURRENCY', 4)
-            
-            batches = [to_process[i:i + batch_size] for i in range(0, len(to_process), batch_size)]
-            log.info('vision_batches_prepared', batches=len(batches), total_frames=len(to_process))
-            
-            semaphore = asyncio.Semaphore(concurrency)
-            
-            async def process_batch(batch):
-                async with semaphore:
-                    try:
-                        return await vision_service.analyze_frames_batch(batch, transcript_segments)
-                    except Exception as e:
-                        log.warning("Batch failed", error=str(e))
-                        return []
-                        
-            async def run_all():
-                tasks = [process_batch(b) for b in batches]
-                return await asyncio.gather(*tasks)
-
-            t1 = time.time()
-            results = asyncio.run(run_all())
-            t2 = time.time()
-            log.info('vision_api_completed', duration_s=round(t2-t1, 1))
-
-            new_events_count = 0
-            for batch_res in results:
-                for item in batch_res:
-                    try:
-                        storage_key = None
-                        try:
-                            stored = self.storage.store_artifact(
-                                local_path=item['frame_path'],
-                                lecture_id=str(lecture.id),
-                                artifact_type="frames",
-                                extension="jpg"
-                            )
-                            storage_key = stored.storage_key
-                        except Exception as e:
-                            log.warning("Failed to persist frame to storage", error=str(e))
-                        
-                        event = VisualEvent(
-                            lecture_id=lecture.id,
-                            timestamp=item['timestamp'],
-                            frame_hash=item['frame_hash'],
-                            event_type=item.get('event_type', 'unknown'),
-                            description=item.get('description', ''),
-                            visible_text=item.get('visible_text', []),
-                            key_information=item.get('key_information', []),
-                            frame_storage_key=storage_key
-                        )
-                        self.db.add(event)
-                        new_events_count += 1
-                    except Exception as e:
-                        log.error("Failed to parse visual event", error=str(e))
-            
-            self.db.commit()
-            log.info('visual_analysis_total', duration_s=round(time.time()-t0, 1), new_events=new_events_count)
-            
-            if new_events_count > 0 or existing_count > 0:
-                return True
-                
-            return False
-
-        finally:
-            if out_dir and os.path.exists(out_dir):
+        batch_size = getattr(settings, 'VISION_MAX_IMAGES_PER_REQUEST', 5)
+        concurrency = getattr(settings, 'VISION_CONCURRENCY', 4)
+        
+        batches = [to_process[i:i + batch_size] for i in range(0, len(to_process), batch_size)]
+        log.info('vision_batches_prepared', batches=len(batches), total_frames=len(to_process))
+        
+        semaphore = asyncio.Semaphore(concurrency)
+        
+        async def process_batch(batch):
+            async with semaphore:
                 try:
-                    shutil.rmtree(out_dir)
-                    log.info("cleanup completed", directory=out_dir)
+                    return await vision_service.analyze_frames_batch(batch, transcript_segments)
                 except Exception as e:
-                    log.warning("Failed to clean up extracted frames", error=str(e))
+                    log.warning("Batch failed", error=str(e))
+                    return []
+                    
+        async def run_all():
+            tasks = [process_batch(b) for b in batches]
+            return await asyncio.gather(*tasks)
+
+        t1 = time.time()
+        results = asyncio.run(run_all())
+        t2 = time.time()
+        log.info('vision_api_completed', duration_s=round(t2-t1, 1))
+
+        new_events_count = 0
+        for batch_res in results:
+            for item in batch_res:
+                try:
+                    # Honest Strategy: We don't pretend a selection mechanism exists.
+                    # We store the knowledge in DB and discard the image (frame_storage_key=None).
+                    event = VisualEvent(
+                        lecture_id=lecture.id,
+                        timestamp=item['timestamp'],
+                        frame_hash=item['frame_hash'],
+                        event_type=item.get('event_type', 'unknown'),
+                        description=item.get('description', ''),
+                        visible_text=item.get('visible_text', []),
+                        key_information=item.get('key_information', []),
+                        frame_storage_key=None
+                    )
+                    self.db.add(event)
+                    new_events_count += 1
+                except Exception as e:
+                    log.error("Failed to parse visual event", error=str(e))
+        
+        self.db.commit()
+        log.info('visual_analysis_total', duration_s=round(time.time()-t0, 1), new_events=new_events_count)
+        
+        if new_events_count > 0 or existing_count > 0:
+            return True
+            
+        return False
 
     def _stage_chapters(self, lecture: Lecture, log) -> None:
         """Persist chapter boundaries. Uses YouTube chapters if available,
@@ -523,12 +497,35 @@ class PipelineOrchestrator:
             for ch in chapters
         ]
 
+        # Load visual events if force_regenerate
+        visual_data = []
+        if force_regenerate:
+            events = (
+                self.db.query(VisualEvent)
+                .filter(VisualEvent.lecture_id == lecture.id)
+                .order_by(VisualEvent.timestamp)
+                .all()
+            )
+            visual_data = [
+                {
+                    "timestamp": float(e.timestamp),
+                    "event_type": e.event_type,
+                    "description": e.description,
+                    "visible_text": e.visible_text,
+                    "frame_storage_key": e.frame_storage_key,
+                }
+                for e in events
+            ]
+
         log.info("Generating structured notes")
         try:
             validated_notes: StructuredNotes = self.notes.generate_notes(
                 lecture_title=lecture.title or "Untitled",
                 transcript_segments=transcript_data,
                 chapters=chapter_data,
+                visual_events=visual_data if visual_data else None,
+                db=self.db,
+                lecture_id=str(lecture.id)
             )
         except NotesGenerationError as e:
             raise PipelineError(str(e), "AI_GENERATION_FAILED")
@@ -537,10 +534,11 @@ class PipelineOrchestrator:
         latest_note = self.db.query(Note).filter(Note.lecture_id == lecture.id).order_by(Note.version.desc()).first()
         next_version = (latest_note.version + 1) if latest_note else 1
         
+        from app.core.config import settings
         note = Note(
             lecture_id=lecture.id,
             version=next_version,
-            schema_version="1.0",
+            schema_version=settings.PIPELINE_VERSION,
             content_json=validated_notes.model_dump(),
         )
         self.db.add(note)
@@ -548,75 +546,3 @@ class PipelineOrchestrator:
         self.db.refresh(note)
         log.info("Structured notes persisted", note_id=str(note.id))
         return note
-
-    def _stage_pdf(self, lecture: Lecture, note: Note, log) -> None:
-        """Generate PDF from notes, store it, and create artifact record.
-        Skips if a PDF artifact already exists for this note."""
-        existing = (
-            self.db.query(Artifact)
-            .filter(
-                Artifact.lecture_id == lecture.id,
-                Artifact.note_id == note.id,
-                Artifact.type == "pdf",
-            )
-            .first()
-        )
-        if existing:
-            log.info("PDF artifact already exists, skipping")
-            return
-
-        # Reconstruct StructuredNotes from the stored JSON
-        notes_data = StructuredNotes.model_validate(note.content_json)
-
-        log.info("Generating PDF")
-        try:
-            pdf_path = self.pdf.generate_pdf(
-                notes=notes_data,
-                source_url=lecture.youtube_url,
-            )
-        except PdfGenerationError as e:
-            raise PipelineError(str(e), "PDF_GENERATION_FAILED")
-
-        # Store in object storage
-        stored = self.storage.store_artifact(
-            local_path=pdf_path,
-            lecture_id=str(lecture.id),
-            artifact_type="pdf",
-            extension="pdf",
-        )
-
-        # Create artifact record
-        artifact = Artifact(
-            lecture_id=lecture.id,
-            note_id=note.id,
-            type="pdf",
-            storage_key=stored.storage_key,
-            mime_type="application/pdf",
-            size_bytes=stored.size_bytes,
-            checksum=stored.checksum,
-        )
-        self.db.add(artifact)
-        self.db.commit()
-
-        # Clean up temp PDF
-        MediaService.cleanup_file(pdf_path)
-        log.info("PDF artifact stored", artifact_id=str(artifact.id), size=stored.size_bytes)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -32,7 +32,6 @@ class TestCaptionExtractionStage:
             media_service=mock_media,
             transcription_service=mock_transcription,
             notes_service=Mock(),
-            pdf_service=Mock(),
             storage_service=Mock()
         )
 

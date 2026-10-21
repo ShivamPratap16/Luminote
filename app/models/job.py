@@ -14,6 +14,7 @@ class ProcessingJob(Base):
     current_stage = Column(String, nullable=False, default="created")
     progress = Column(Numeric, default=0.0)
     attempt = Column(Integer, default=1)
+    pipeline_version = Column(String, nullable=True)
     
     error_code = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)

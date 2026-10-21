@@ -145,7 +145,7 @@ class TestNvidiaProviderGeneration:
         mock_openai_cls.return_value = mock_client
 
         provider = NvidiaProvider(api_key="test-key", base_url="https://test.com", model="test-model")
-        result = provider.generate_structured_notes(self._sample_context())
+        result, metrics = provider.generate_structured_notes(self._sample_context())
 
         assert result["title"] == "Test Lecture"
         assert len(result["sections"]) == 1
@@ -243,7 +243,7 @@ class TestNvidiaProviderGeneration:
         mock_openai_cls.return_value = mock_client
 
         provider = NvidiaProvider(api_key="test-key", base_url="https://test.com", model="m")
-        result = provider.generate_structured_notes(self._sample_context())
+        result, metrics = provider.generate_structured_notes(self._sample_context())
         assert result["title"] == "Cleaned"
 
 

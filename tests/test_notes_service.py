@@ -19,7 +19,7 @@ class FakeAIProvider(AIProvider):
         self.call_count += 1
         if self._error:
             raise self._error
-        return self._response
+        return self._response, {"input_tokens": 0, "output_tokens": 0}
 
 
 VALID_NOTES = {

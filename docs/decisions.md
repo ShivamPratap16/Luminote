@@ -140,3 +140,6 @@ This document records important choices and why they were made. It is intentiona
 - The `AI_PROVIDER` default is now `nvidia`. OpenAI and Google remain available as alternatives.
 - JSON extraction logic was hardened to handle `<think>` reasoning blocks and markdown code fences that the Qwen model may emit.
 - The existing provider abstraction (`AIProvider` interface), retry system, schema validation, and downstream pipeline are unchanged.
+
+## ADR: Derived Export Retention
+PDFs are strictly temporary. The structured Notes JSON is the canonical artifact. Derived formats (PDF, HTML) are generated on-demand to save storage.

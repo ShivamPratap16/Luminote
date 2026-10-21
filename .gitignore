@@ -31,3 +31,6 @@ alembic/versions/*.pyc
 # OS
 Thumbs.db
 .DS_Store
+
+# Local runtime data (YouTube cache, frames)
+data/

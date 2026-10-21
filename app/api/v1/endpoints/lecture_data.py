@@ -1,5 +1,8 @@
 """Transcript, chapters, notes, and artifact API endpoints."""
+import os
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -12,6 +15,7 @@ from app.models.note import Note
 from app.models.artifact import Artifact
 from app.schemas.notes import NotesResponse, StructuredNotes
 from app.services.storage import StorageService
+from app.services.pdf import PdfService, PdfGenerationError
 
 router = APIRouter()
 
@@ -103,30 +107,46 @@ def get_notes(lecture_id: str, db: Session = Depends(get_db)):
 
 # ── PDF Artifact ────────────────────────────────────────────────
 
-@router.get("/{lecture_id}/artifacts/pdf")
-def get_pdf_artifact(lecture_id: str, db: Session = Depends(get_db)):
-    """Get PDF artifact metadata and download URL for a lecture."""
+@router.get("/{lecture_id}/pdf")
+def download_pdf(lecture_id: str, db: Session = Depends(get_db)):
+    """Generate and stream a PDF from stored Notes JSON on demand."""
     lecture = db.query(Lecture).filter(Lecture.id == lecture_id).first()
     if not lecture:
         raise HTTPException(status_code=404, detail="Lecture not found")
 
-    artifact = (
-        db.query(Artifact)
-        .filter(Artifact.lecture_id == lecture_id, Artifact.type == "pdf")
-        .order_by(Artifact.created_at.desc())
+    note = (
+        db.query(Note)
+        .filter(Note.lecture_id == lecture_id)
+        .order_by(Note.version.desc())
         .first()
     )
-    if not artifact:
-        raise HTTPException(status_code=404, detail="PDF not yet available")
+    if not note:
+        raise HTTPException(status_code=404, detail="Notes not yet available to generate PDF")
 
-    storage = StorageService()
-    download_url = storage.get_download_url(artifact.storage_key)
+    try:
+        notes_data = StructuredNotes.model_validate(note.content_json)
+        pdf_service = PdfService()
+        pdf_path = pdf_service.generate_pdf(
+            notes=notes_data,
+            source_url=lecture.youtube_url
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
 
-    return {
-        "artifact_id": str(artifact.id),
-        "type": artifact.type,
-        "mime_type": artifact.mime_type,
-        "size_bytes": artifact.size_bytes,
-        "download_url": download_url,
-        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
-    }
+    def cleanup_pdf():
+        if os.path.exists(pdf_path):
+            try:
+                os.remove(pdf_path)
+                # Also try to clean up the parent temp dir if empty
+                parent_dir = os.path.dirname(pdf_path)
+                if not os.listdir(parent_dir):
+                    os.rmdir(parent_dir)
+            except Exception:
+                pass
+
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        filename=f"lecture_{lecture_id}.pdf",
+        background=BackgroundTask(cleanup_pdf)
+    )

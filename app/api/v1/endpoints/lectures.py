@@ -55,16 +55,19 @@ def create_lecture(lecture_in: LectureCreate, db: Session = Depends(get_db)):
         # Check completed jobs matching current version
         completed_job = db.query(ProcessingJob).filter(
             ProcessingJob.lecture_id == lecture.id,
+            ProcessingJob.pipeline_version == settings.PIPELINE_VERSION,
             ProcessingJob.status == "completed"
         ).order_by(ProcessingJob.created_at.desc()).first()
         
         if completed_job:
-            # Verify Note version matches PIPELINE_VERSION
-            note = db.query(Note).filter(Note.lecture_id == lecture.id).order_by(Note.version.desc()).first()
-            if note and note.schema_version == settings.PIPELINE_VERSION:
-                return LectureCreateResponse(lecture_id=lecture.id, job_id=completed_job.id, status=completed_job.status)
+            return LectureCreateResponse(lecture_id=lecture.id, job_id=completed_job.id, status=completed_job.status)
 
-        job = ProcessingJob(lecture_id=lecture.id, status="queued", current_stage="created")
+        job = ProcessingJob(
+            lecture_id=lecture.id, 
+            status="queued", 
+            current_stage="created",
+            pipeline_version=settings.PIPELINE_VERSION
+        )
         db.add(job)
         db.commit()
         db.refresh(job)
@@ -106,6 +109,3 @@ def get_lecture(lecture_id: str, db: Session = Depends(get_db)):
             },
         )
     return lecture
-
-
-

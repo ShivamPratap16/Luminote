@@ -41,10 +41,10 @@ class AIProvider(ABC):
     """
 
     @abstractmethod
-    def generate_structured_notes(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Given assembled context (lecture, transcript, chapters), return structured notes dict.
+    def generate_structured_notes(self, context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
+        """Given assembled context (lecture, transcript, chapters), return structured notes dict and usage metrics.
 
-        Must return a dict that can be validated against StructuredNotes schema.
+        Must return a tuple: (parsed_json_dict, usage_metrics_dict).
         Raises AIProviderError on failure.
         """
         ...
@@ -89,14 +89,20 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
     transcript = context.get("transcript", [])
     visual_events = context.get("visual_events", [])
 
-    parts = [f"Lecture: {lecture.get('title', 'Unknown')}\n"]
+    parts = [f"Lecture: {lecture.get('title', 'Unknown')}"]
+    
+    if "chunk_info" in lecture:
+        parts.append(f"Position: {lecture['chunk_info']}")
+    
+    parts.append("")
 
     if chapters:
-        parts.append("Chapters:")
+        parts.append("Chapters/Context:")
         for ch in chapters:
-            parts.append(
-                f"  - {ch['title']} ({ch['start_seconds']:.0f}s - {ch['end_seconds']:.0f}s)"
-            )
+            if "start_seconds" in ch:
+                parts.append(f"  - {ch['title']} ({ch['start_seconds']:.0f}s - {ch['end_seconds']:.0f}s)")
+            else:
+                parts.append(f"  - {ch['title']}")
         parts.append("")
 
     if visual_events:
@@ -107,8 +113,8 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
 
     parts.append("Transcript:")
     for seg in transcript:
-        ts = f"[{seg['start_seconds']:.1f}s]"
-        parts.append(f"{ts} {seg['text']}")
+        ts = f"[{seg.get('start_seconds', 0):.1f}s]"
+        parts.append(f"{ts} {seg.get('text', '')}")
 
     return "\n".join(parts)
 
@@ -170,7 +176,7 @@ class NvidiaProvider(AIProvider):
                 "Set it in .env or as an environment variable."
             )
 
-    def generate_structured_notes(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_structured_notes(self, context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
         """Generate structured notes using NVIDIA NIM chat completion."""
         import openai
 
@@ -196,7 +202,13 @@ class NvidiaProvider(AIProvider):
                 stream=False,
             )
             raw_content = response.choices[0].message.content
-            return _extract_json_from_response(raw_content)
+            parsed = _extract_json_from_response(raw_content)
+            
+            metrics = {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+            }
+            return parsed, metrics
 
         except openai.APITimeoutError as e:
             raise AIProviderTimeout(f"NVIDIA NIM request timed out: {e}")
@@ -227,7 +239,7 @@ class OpenAIProvider(AIProvider):
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY is required for OpenAI provider")
 
-    def generate_structured_notes(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_structured_notes(self, context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
         """Generate structured notes using OpenAI chat completion."""
         import openai
 
@@ -248,7 +260,12 @@ class OpenAIProvider(AIProvider):
                 temperature=0.3,
             )
             raw_content = response.choices[0].message.content
-            return _extract_json_from_response(raw_content)
+            parsed = _extract_json_from_response(raw_content)
+            metrics = {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+            }
+            return parsed, metrics
 
         except openai.APITimeoutError as e:
             raise AIProviderTimeout(f"OpenAI request timed out: {e}")
@@ -277,7 +294,7 @@ class GoogleAIProvider(AIProvider):
         if not self.api_key:
             raise ValueError("GOOGLE_AI_API_KEY is required for Google AI provider")
 
-    def generate_structured_notes(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_structured_notes(self, context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
         """Generate structured notes using Google Generative AI."""
         import google.generativeai as genai
 
@@ -295,10 +312,74 @@ class GoogleAIProvider(AIProvider):
                     temperature=0.3,
                 ),
             )
-            return _extract_json_from_response(response.text)
+            parsed = _extract_json_from_response(response.text)
+            metrics = {
+                "input_tokens": response.usage_metadata.prompt_token_count if hasattr(response, "usage_metadata") else 0,
+                "output_tokens": response.usage_metadata.candidates_token_count if hasattr(response, "usage_metadata") else 0,
+            }
+            return parsed, metrics
 
         except Exception as e:
             raise AIProviderError(f"Google AI error: {e}")
+
+
+class GeminiProvider(AIProvider):
+    """Gemini AI provider (using explicit GEMINI_ variables)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout: int | None = None,
+    ):
+        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.model_name = model or settings.GEMINI_MODEL
+        self.timeout = timeout or settings.AI_REQUEST_TIMEOUT
+
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is required for Gemini provider")
+
+    def generate_structured_notes(self, context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
+        import openai
+
+        client = openai.OpenAI(
+            api_key=self.api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=self.timeout,
+        )
+
+        system_prompt = _build_system_prompt()
+        user_prompt = _build_user_prompt(context)
+
+        logger.info("Requesting notes from Gemini AI via OpenAI SDK", model=self.model_name)
+        try:
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+            )
+            raw_content = response.choices[0].message.content
+            parsed = _extract_json_from_response(raw_content)
+            
+            metrics = {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+            }
+            return parsed, metrics
+
+        except openai.APITimeoutError as e:
+            raise AIProviderTimeout(f"Gemini AI timeout: {e}")
+        except openai.RateLimitError as e:
+            raise AIProviderRateLimited(f"Gemini AI rate limited: {e}")
+        except openai.APIStatusError as e:
+            raise AIProviderError(f"Gemini AI API error (HTTP {e.status_code}): {e.message}")
+        except openai.APIConnectionError as e:
+            raise AIProviderError(f"Gemini AI connection error: {e}")
 
 
 # ── Factory ────────────────────────────────────────────────────────
@@ -313,6 +394,8 @@ def create_ai_provider(provider_name: str | None = None) -> AIProvider:
         return OpenAIProvider()
     elif name == "google":
         return GoogleAIProvider()
+    elif name == "gemini":
+        return GeminiProvider()
     else:
-        raise ValueError(f"Unknown AI provider: {name}. Supported: nvidia, openai, google")
+        raise ValueError(f"Unknown AI provider: {name}. Supported: nvidia, openai, google, gemini")
 

@@ -17,4 +17,4 @@ def test_bot_block_detection():
         with pytest.raises(Exception) as excinfo:
             service.get_video_stream('12345678901')
         assert not isinstance(excinfo.value, YouTubeAcquisitionBlocked)
-        assert "Failed to download video" in str(excinfo.value)
+        assert "Failed to extract video info" in str(excinfo.value)

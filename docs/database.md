@@ -222,3 +222,6 @@ Use Alembic.
 Do not edit production schemas manually.
 
 Every schema change should be represented as a migration that can be applied consistently in every environment.
+
+## Artifacts
+PDFs are no longer stored permanently as artifacts. They are generated on demand from Notes JSON and streamed to the client.

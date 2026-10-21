@@ -283,3 +283,6 @@ Search + RAG
 ```
 
 This enables future lecture Q&A without reprocessing the original media.
+
+## Temp Lifecycle
+All media (video, audio, frames) is stored in a job-scoped temp directory during processing. A Celery beat task cleans up stale directories from crashed jobs, but strictly protects active jobs.

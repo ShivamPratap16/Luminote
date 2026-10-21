@@ -95,3 +95,14 @@ def _get_current_stage(db, job_id: str) -> str:
         return job.current_stage if job else "unknown"
     except Exception:
         return "unknown"
+
+
+@celery_app.task
+def cleanup_stale_temp_dirs():
+    """Periodic task to remove abandoned temp directories."""
+    from app.services.temp_lifecycle import TempLifecycleService
+    db = SessionLocal()
+    try:
+        TempLifecycleService.cleanup_stale_dirs(db)
+    finally:
+        db.close()

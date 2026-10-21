@@ -21,12 +21,28 @@ class Settings(BaseSettings):
     STORAGE_S3_ACCESS_KEY: Optional[str] = None
     STORAGE_S3_SECRET_KEY: Optional[str] = None
 
-    # Media / yt-dlp
-    MEDIA_TEMP_DIR: str = "./tmp/media"
-    MEDIA_MAX_DURATION_SECONDS: int = 14400  # 4 hours
-    YOUTUBE_MEDIA_CACHE_ENABLED: bool = True
+    # Media / yt-dlp & Temp Storage
+    YOUTUBE_MEDIA_PERSISTENT_CACHE_ENABLED: bool = False
     YOUTUBE_MEDIA_CACHE_DIR: str = "./data/youtube-cache"
-    PIPELINE_VERSION: str = "v7"
+    YOUTUBE_MEDIA_TEMP_DIR: str = "./tmp/lecture-notes"
+    
+    # Disk limits
+    MAX_VIDEO_SIZE_MB: int = 2048           # 2 GB max video size
+    MAX_VIDEO_DURATION_MINUTES: int = 240   # 4 hours
+    MAX_TEMP_STORAGE_GB: float = 10.0       # Application aggregate temp usage limit
+    MIN_FREE_DISK_GB: float = 5.0           # Machine minimum free disk to allow new jobs
+    
+    # Crash-safe cleanup
+    TEMP_FILE_RETENTION_MINUTES: int = 120  # Stale dirs older than 2 hours get cleaned
+
+    # Fast Notes Concurrency & Chunking
+    FAST_NOTES_CHUNK_MAX_TOKENS: int = 6000
+    FAST_NOTES_CHUNK_OVERLAP_TOKENS: int = 200
+    FAST_NOTES_MAX_CONCURRENCY: int = 4
+    FAST_NOTES_PROVIDER: str = "nvidia"
+
+    # Application State
+    PIPELINE_VERSION: str = "v8"
 
     # Transcription
     WHISPER_MODEL_SIZE: str = "base"
@@ -61,6 +77,10 @@ class Settings(BaseSettings):
     # Google AI (legacy/alternative)
     GOOGLE_AI_API_KEY: Optional[str] = None
     GOOGLE_AI_MODEL: str = "gemini-1.5-flash"
+    
+    # Gemini (new config pattern)
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-flash-latest"
 
     AI_REQUEST_TIMEOUT: int = 120
     AI_MAX_RETRIES: int = 3
@@ -75,12 +95,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
-
-
-
-
-
-
-
